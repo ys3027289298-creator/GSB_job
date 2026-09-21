@@ -1,0 +1,84 @@
+{
+  "scenarioId": "bridge-ys01-demo",
+  "seed": 841726,
+  "shiftMinutes": 480,
+  "lanes": [
+    { "id": "L1", "label": "上游侧车道", "state": "open" },
+    { "id": "L2", "label": "中间车道", "state": "open" },
+    { "id": "L3", "label": "下游侧车道", "state": "open" }
+  ],
+  "inspectionPoints": [
+    { "id": "P1", "label": "北侧伸缩缝", "laneIds": ["L1", "L2"] },
+    { "id": "P2", "label": "主桥第三桥墩", "laneIds": ["L2", "L3"] },
+    { "id": "P3", "label": "南侧排水槽", "laneIds": ["L1", "L3"] },
+    { "id": "P4", "label": "东侧照明箱", "laneIds": ["L2"] }
+  ],
+  "crews": [
+    { "id": "CIVIL_A", "label": "结构检修组", "skills": ["structure", "inspection"] },
+    { "id": "ELEC_A", "label": "电气检修组", "skills": ["electrical", "inspection"] },
+    { "id": "ROAD_A", "label": "交通隔离组", "skills": ["traffic-control"] }
+  ],
+  "equipment": [
+    { "id": "LIFT_01", "label": "小型吊装车", "skills": ["lift"] },
+    { "id": "SCAN_01", "label": "裂缝检测仪", "skills": ["inspection"] },
+    { "id": "BARRIER_01", "label": "移动隔离设施", "skills": ["traffic-control"] }
+  ],
+  "tasks": [
+    {
+      "id": "T_INSPECT_JOINT",
+      "label": "检查北侧伸缩缝",
+      "pointId": "P1",
+      "requiredSkills": ["inspection"],
+      "requiredEquipment": ["SCAN_01"],
+      "durationMinutes": 35,
+      "requiresLaneClosure": false,
+      "prerequisites": []
+    },
+    {
+      "id": "T_REPAIR_JOINT",
+      "label": "更换伸缩缝卡滞组件",
+      "pointId": "P1",
+      "requiredSkills": ["structure"],
+      "requiredEquipment": ["LIFT_01", "BARRIER_01"],
+      "durationMinutes": 90,
+      "requiresLaneClosure": true,
+      "prerequisites": ["T_INSPECT_JOINT"]
+    },
+    {
+      "id": "T_CLEAR_DRAIN",
+      "label": "清理南侧排水槽",
+      "pointId": "P3",
+      "requiredSkills": ["structure"],
+      "requiredEquipment": ["BARRIER_01"],
+      "durationMinutes": 55,
+      "requiresLaneClosure": true,
+      "prerequisites": []
+    },
+    {
+      "id": "T_REPAIR_LIGHT",
+      "label": "修复东侧照明箱",
+      "pointId": "P4",
+      "requiredSkills": ["electrical"],
+      "requiredEquipment": ["BARRIER_01"],
+      "durationMinutes": 45,
+      "requiresLaneClosure": true,
+      "prerequisites": []
+    },
+    {
+      "id": "T_PIER_SCAN",
+      "label": "检测主桥第三桥墩",
+      "pointId": "P2",
+      "requiredSkills": ["inspection"],
+      "requiredEquipment": ["SCAN_01"],
+      "durationMinutes": 60,
+      "requiresLaneClosure": false,
+      "prerequisites": []
+    }
+  ],
+  "trafficProfile": {
+    "basePressureByHour": [42, 48, 61, 67, 73, 58, 46, 39],
+    "laneClosurePenalty": 18,
+    "accidentRiskThreshold": 85
+  },
+  "budget": 12000
+}
