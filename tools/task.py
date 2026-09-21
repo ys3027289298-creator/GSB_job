@@ -20,6 +20,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import time
 
 import find_trajectory
 
@@ -40,11 +41,15 @@ SIDES = ("A", "B")
 # 出好的 prompt 另存一份到桌面，方便双击打开、复制粘贴
 PROMPT_DIR_NAME = "GSB_prompt"
 
-# 题目工作区默认放这里： <桌面>/GSB_codex/projects/<题号>/
-TASKS_DIR_NAME = os.environ.get("GSB_TASKS_DIR") or os.path.join("GSB_codex", "projects")
+# 新题默认从 YS_01 顺序编号；语言框架在每次出题结果中固定显示
+TASK_ID_PREFIX = "YS_"
+DEFAULT_LANGUAGE_FRAMEWORK = "TypeScript, React, Vite, Canvas"
 
-# A/B 项目目录与 Codex 启动器分开保存
-LAUNCHERS_DIR_NAME = os.path.join("GSB_codex", "launchers")
+# Codex CLI 完整成功后才归档到这里；失败/中断的轨迹不放进这个目录
+LOG_DIR_NAME = "GSB_日志文件"
+
+# 题目工作区默认放这里： <桌面>/GSB_codex/<题号>/
+TASKS_DIR_NAME = os.environ.get("GSB_TASKS_DIR") or "GSB_codex"
 
 # 每道题一个标签颜色，四个窗口一眼分得开
 LAUNCH_COLORS = ["#8e44ad", "#d35400", "#16a085", "#c2185b",
@@ -149,6 +154,25 @@ def task_dir(task_id):
     return os.path.join(TASKS, task_id.upper())
 
 
+def next_task_id():
+    """返回下一个 YS_01、YS_02 ... 题号。"""
+    highest = 0
+    if os.path.isdir(TASKS):
+        for name in os.listdir(TASKS):
+            match = re.fullmatch(r"YS_(\d+)", name.upper())
+            if match:
+                highest = max(highest, int(match.group(1)))
+    return f"{TASK_ID_PREFIX}{highest + 1:02d}"
+
+
+def normalize_prompt_text(text):
+    """统一 prompt 为 UTF-8、单行一段、段落之间无空行。"""
+    text = (text or "").lstrip("\ufeff")
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    lines = [line.rstrip() for line in text.split("\n") if line.strip()]
+    return "\n".join(lines) + "\n"
+
+
 def load_meta(task_id):
     path = os.path.join(task_dir(task_id), "meta.json")
     if not os.path.exists(path):
@@ -174,22 +198,13 @@ def desktop_dir():
 
 
 def prompt_copy_path(task_id, meta):
-    """桌面副本的路径：<桌面>/prompt原文/<题目号>-<项目名>.txt"""
-    title = (meta.get("title") or "").strip()
-    slug = title.split()[0] if title else task_id.lower()
-    return os.path.join(desktop_dir(), PROMPT_DIR_NAME, f"{task_id.upper()}-{slug}.txt")
+    """桌面副本的路径：<桌面>/GSB_prompt/<题目号>.txt"""
+    return os.path.join(desktop_dir(), PROMPT_DIR_NAME, f"{task_id.upper()}.txt")
 
 
 def default_task_root(task_id):
-    """题目目录的默认位置：<桌面>/GSB_codex/projects/<题号>/"""
+    """题目目录的默认位置：<桌面>/GSB_codex/<题号>/"""
     return os.path.join(desktop_dir(), TASKS_DIR_NAME, task_id.upper())
-
-
-def launcher_dir():
-    """Codex 启动器的独立目录。"""
-    return os.environ.get("GSB_LAUNCHERS_DIR") or os.path.join(
-        desktop_dir(), LAUNCHERS_DIR_NAME
-    )
 
 
 def drop_prompt_copy(task_id, meta=None):
@@ -200,7 +215,10 @@ def drop_prompt_copy(task_id, meta=None):
         return ""
     dest = prompt_copy_path(task_id, meta)
     os.makedirs(os.path.dirname(dest), exist_ok=True)
-    shutil.copy2(src, dest)
+    with open(src, encoding="utf-8") as fh:
+        prompt = normalize_prompt_text(fh.read())
+    with open(dest, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(prompt)
     return dest
 
 
@@ -241,9 +259,12 @@ def copy_workspace(src, dst=REPO):
             shutil.copy2(s, d)
 
 
-def commit_all(message, cwd=REPO):
+def commit_all(message, cwd=REPO, allow_empty=False):
     git("add", "-A", cwd=cwd)
     if not git("status", "--porcelain", cwd=cwd):
+        if allow_empty and not git("rev-parse", "--verify", "HEAD", cwd=cwd, check=False):
+            git("commit", "--allow-empty", "-q", "-m", message, cwd=cwd)
+            return git("rev-parse", "HEAD", cwd=cwd)
         return git("rev-parse", "HEAD", cwd=cwd)
     git("commit", "-q", "-m", message, cwd=cwd)
     return git("rev-parse", "HEAD", cwd=cwd)
@@ -257,7 +278,7 @@ def ensure_workspace_repo(workspace):
             name, email = default_git_identity()
             git("config", "user.name", name, cwd=workspace)
             git("config", "user.email", email, cwd=workspace)
-        commit_all("initial environment", cwd=workspace)
+        commit_all("initial environment", cwd=workspace, allow_empty=True)
         return True
     return False
 
@@ -400,7 +421,10 @@ def sync_workspace_to_branch(task_id, role, workspace):
         git("checkout", "-B", br, start)
     clear_worktree()
     copy_workspace(workspace)
-    sha = commit_all(f"{task_id.upper()} {role} ({dt.date.today().isoformat()})")
+    sha = commit_all(
+        f"{task_id.upper()} {role} ({dt.date.today().isoformat()})",
+        allow_empty=(role == "base"),
+    )
     return br, sha
 
 
@@ -408,12 +432,12 @@ def sync_workspace_to_branch(task_id, role, workspace):
 
 
 def cmd_new(args):
-    task_id = args.id.upper()
+    task_id = (args.id or next_task_id()).upper()
     dest = task_dir(task_id)
     if os.path.exists(dest):
         raise SystemExit(f"{dest} 已存在")
     with open(args.prompt_file, encoding="utf-8") as fh:
-        prompt = fh.read()
+        prompt = normalize_prompt_text(fh.read())
 
     if ensure_workspace_repo(args.workspace):
         print(f"已把工作区初始化为 git 仓库: {args.workspace}")
@@ -425,8 +449,8 @@ def cmd_new(args):
 
     template = os.path.join(TASKS, "_TEMPLATE")
     shutil.copytree(template, dest)
-    with open(os.path.join(dest, "prompt.md"), "w", encoding="utf-8") as fh:
-        fh.write(prompt if prompt.endswith("\n") else prompt + "\n")
+    with open(os.path.join(dest, "prompt.md"), "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(prompt)
     os.makedirs(os.path.join(dest, "trajectories"), exist_ok=True)
 
     meta = {
@@ -435,7 +459,7 @@ def cmd_new(args):
         "created_at": dt.datetime.now().isoformat(timespec="seconds"),
         "task_type": args.task_type,
         "difficulty": args.difficulty,
-        "language_framework": args.lang,
+        "language_framework": args.lang or DEFAULT_LANGUAGE_FRAMEWORK,
         "harness": args.harness,
         "harness_version": args.harness_version,
         "os": args.os,
@@ -443,10 +467,10 @@ def cmd_new(args):
         "prompt_file": "prompt.md",
         "initial_snapshot": {"branch": br, "sha": sha, "permalink": permalink(sha)},
         "runs": {
-            "A": {"session_id": "", "trajectory_local": "", "trajectory_url": "",
+            "A": {"session_id": "", "port": "", "trajectory_local": "", "trajectory_url": "",
                   "branch": branches(task_id)["a"], "product_snapshot_sha": "",
                   "product_snapshot_permalink": ""},
-            "B": {"session_id": "", "trajectory_local": "", "trajectory_url": "",
+            "B": {"session_id": "", "port": "", "trajectory_local": "", "trajectory_url": "",
                   "branch": branches(task_id)["b"], "product_snapshot_sha": "",
                   "product_snapshot_permalink": ""},
         },
@@ -462,6 +486,7 @@ def cmd_new(args):
     print(f"  permalink : {permalink(sha)}")
     if desktop_copy:
         print(f"prompt 副本: {desktop_copy}")
+    print(f"语言框架：{meta['language_framework']}")
 
     # 默认就把 A / B 两份工作区和启动器一起铺好（不传 --root 就放桌面 \GSB题目\<题号>）
     print()
@@ -506,6 +531,8 @@ def cmd_record(args):
         "trajectory_local": local_path,
         "trajectory_source": source_path,
     })
+    if getattr(args, "port", None):
+        info["port"] = int(args.port)
     save_meta(task_id, meta)
     commit_all(f"{task_id.upper()} record {role.upper()} ({args.session})")
 
@@ -523,6 +550,158 @@ def cmd_record(args):
         print(f"  轨迹文件  : 未找到 SessionID {args.session} 的 jsonl，请确认 SessionID 或手动放入 trajectories/")
     if args.push:
         cmd_push(argparse.Namespace(id=task_id))
+    return 0
+
+
+def trajectory_cwd(path):
+    """读取 Codex rollout 前几行里的 cwd，不加载整份可能很大的轨迹。"""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            for _ in range(20):
+                line = fh.readline()
+                if not line:
+                    break
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                payload = event.get("payload") or {}
+                if isinstance(payload, dict) and payload.get("cwd"):
+                    return payload["cwd"]
+    except OSError:
+        pass
+    return ""
+
+
+def trajectory_session_id(path):
+    """读取 rollout 前几行里的 SessionID，用于自动登记成功的 A/B 运行。"""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            for _ in range(30):
+                line = fh.readline()
+                if not line:
+                    break
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                payload = event.get("payload") or {}
+                if isinstance(payload, dict):
+                    for key in ("session_id", "sessionId"):
+                        value = payload.get(key)
+                        if value:
+                            return str(value)
+                value = event.get("session_id") or event.get("sessionId")
+                if value:
+                    return str(value)
+    except OSError:
+        pass
+    return ""
+
+
+def newest_trajectory_for_workspace(workspace, started_ms=0):
+    """在所有 Codex HOME 中找本轮工作区最近生成的 rollout jsonl。"""
+    target = os.path.normcase(os.path.abspath(workspace))
+    candidates = []
+    for root in find_trajectory.codex_roots():
+        if not os.path.isdir(root):
+            continue
+        for dirpath, _dirs, filenames in os.walk(root):
+            for name in filenames:
+                if not name.endswith(".jsonl") or not name.startswith("rollout-"):
+                    continue
+                path = os.path.join(dirpath, name)
+                try:
+                    mtime = os.path.getmtime(path)
+                except OSError:
+                    continue
+                # 给文件系统时间和启动过程留一点缓冲，但最终仍按 cwd 匹配。
+                if started_ms and mtime * 1000 < started_ms - 15000:
+                    continue
+                cwd = trajectory_cwd(path)
+                if cwd and os.path.normcase(os.path.abspath(cwd)) == target:
+                    candidates.append((mtime, path))
+    return max(candidates, default=(0, ""))[1]
+
+
+def archive_success_trajectory(task_id, side, src):
+    """只归档监督器确认成功的原始 rollout，并保留原文件名。"""
+    destination_dir = os.path.join(desktop_dir(), LOG_DIR_NAME, task_id)
+    os.makedirs(destination_dir, exist_ok=True)
+    destination = os.path.join(destination_dir, os.path.basename(src))
+    shutil.copy2(src, destination)
+    print(f"{task_id}-{side.upper()} 日志已归档: {destination}")
+    return destination
+
+
+def cmd_archive_trajectory(args):
+    """只把成功运行的原始 rollout 文件复制到桌面日志目录，保留原文件名。"""
+    task_id = args.id.upper()
+    src = newest_trajectory_for_workspace(args.workspace, args.started_ms)
+    if not src:
+        print(f"{task_id}-{args.side.upper()} 未找到对应的完整 rollout 轨迹")
+        return 1
+    archive_success_trajectory(task_id, args.side, src)
+    return 0
+
+
+def acquire_finalize_lock():
+    """A/B 并发完成时串行操作中心仓库，避免 checkout/commit 互相覆盖。"""
+    path = os.path.join(REPO, ".finalize.lock")
+    while True:
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, str(os.getpid()).encode("ascii"))
+            return path, fd
+        except FileExistsError:
+            try:
+                if time.time() - os.path.getmtime(path) > 6 * 60 * 60:
+                    os.remove(path)
+                    continue
+            except OSError:
+                pass
+            time.sleep(1)
+
+
+def release_finalize_lock(path, fd):
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def cmd_finalize_run(args):
+    """成功完成后自动归档日志、创建 A/B 产物分支并推送。"""
+    task_id = args.id.upper()
+    src = newest_trajectory_for_workspace(args.workspace, args.started_ms)
+    if not src:
+        print(f"{task_id}-{args.side.upper()} 未找到成功运行的完整 rollout 轨迹")
+        return 1
+    session_id = trajectory_session_id(src)
+    if not session_id:
+        print(f"{task_id}-{args.side.upper()} 无法从完整 rollout 读取 SessionID")
+        return 1
+
+    archive_success_trajectory(task_id, args.side, src)
+    lock_path, lock_fd = acquire_finalize_lock()
+    try:
+        cmd_record(argparse.Namespace(
+            id=task_id,
+            role=args.side.lower(),
+            workspace=args.workspace,
+            side=args.side.lower(),
+            root="",
+            session=session_id,
+            port=args.port,
+            push=True,
+        ))
+    finally:
+        release_finalize_lock(lock_path, lock_fd)
+    print(f"{task_id}-{args.side.upper()} 已完成：产物分支和台账已推送")
     return 0
 
 
@@ -552,9 +731,8 @@ def cmd_set(args):
     if args.prompt_file:
         with open(args.prompt_file, encoding="utf-8") as fh:
             prompt = fh.read()
-        if not prompt.endswith("\n"):
-            prompt += "\n"
-        with open(os.path.join(task_dir(task_id), "prompt.md"), "w", encoding="utf-8") as fh:
+        prompt = normalize_prompt_text(prompt)
+        with open(os.path.join(task_dir(task_id), "prompt.md"), "w", encoding="utf-8", newline="\n") as fh:
             fh.write(prompt)
         changed.append("prompt.md")
 
@@ -605,6 +783,7 @@ def cmd_set(args):
     print(f"已更新 {task_id}: {', '.join(changed)}")
     if args.prompt_file:
         print(f"prompt 副本已同步: {drop_prompt_copy(task_id, meta)}")
+        print(f"语言框架：{meta.get('language_framework') or DEFAULT_LANGUAGE_FRAMEWORK}")
     if args.push:
         cmd_push(argparse.Namespace(id=task_id))
     return 0
@@ -768,22 +947,25 @@ def compare_with_base(base_ref, workspace):
 
 
 def write_launchers(task_id, root, meta):
-    """在独立启动器目录写 A/B 启动器，项目目录只保存 A/B 工作区。"""
+    """在题号目录中写 A/B 启动器，启动器与 A/B 项目目录同层。"""
     slug = ((meta.get("title") or "").strip().split() or [task_id.lower()])[0]
     slug = re.sub(r"[^A-Za-z0-9._-]+", "", slug) or task_id.lower()
     color = launch_color(task_id)
+    prompt_path = os.path.abspath(
+        os.path.join(desktop_dir(), PROMPT_DIR_NAME, f"{task_id.upper()}.txt")
+    )
+    supervisor_path = os.path.abspath(os.path.join(REPO, "tools", "codex-supervisor.ps1"))
     written = []
-    launch_root = launcher_dir()
-    os.makedirs(launch_root, exist_ok=True)
+    os.makedirs(root, exist_ok=True)
 
     for side in SIDES:
         label = f"{task_id.upper()}-{side} {slug}"
-        path = os.path.join(launch_root, f"{task_id.upper()}-{side}-run.cmd")
+        path = os.path.join(root, f"{side}-run.cmd")
         workspace = os.path.abspath(os.path.join(root, side))
         # .cmd 必须是纯 ASCII：cmd.exe 按 OEM 代码页解析文件，中文注释会出乱码
         body = (
             "@echo off\r\n"
-            f"rem {label} -- open a named/colored terminal tab in this round's workspace\r\n"
+            f"rem {label} -- start Codex in this round's workspace\r\n"
             "setlocal\r\n"
             f'set "LABEL={label}"\r\n'
             f'set "COLOR={color}"\r\n'
@@ -791,22 +973,26 @@ def write_launchers(task_id, root, meta):
             f'set "TASK={task_id.upper()}"\r\n'
             f'set "SIDE={side}"\r\n'
             f'set "REPO={REPO}"\r\n'
+            f'set "PROMPT_FILE={prompt_path}"\r\n'
+            'set "CODEX_CMD=%USERPROFILE%\\.codex-cli-relay\\bin\\codex.cmd"\r\n'
+            f'set "SUPERVISOR={supervisor_path}"\r\n'
             "rem always start from a clean initial environment: the previous attempt is\r\n"
             "rem archived under tasks\\<ID>\\runs\\ first, so nothing is ever lost\r\n"
             'echo [launcher] preparing %TASK%-%SIDE% ...\r\n'
             'pushd "%REPO%"\r\n'
-            "uv run python tools\\task.py cycle %TASK% --side %SIDE%\r\n"
-            "popd\r\n"
-            "where wt >nul 2>nul\r\n"
-            "if errorlevel 1 goto plain\r\n"
-            'wt -w 0 nt --title "%LABEL%" --tabColor "%COLOR%" '
-            '--suppressApplicationTitle -d "%DIR%" cmd /k "%USERPROFILE%\\.codex-cli-relay\\bin\\codex.cmd" --model "auto_model/urm" --yolo\r\n'
-            "if errorlevel 1 goto plain\r\n"
-            "exit /b 0\r\n"
-            ":plain\r\n"
+            'if not exist "%PROMPT_FILE%" (\r\n'
+            '  echo [launcher] prompt file not found: %PROMPT_FILE%\r\n'
+            '  pause\r\n'
+            '  exit /b 1\r\n'
+            ')\r\n'
             "title %LABEL%\r\n"
-            'cd /d "%DIR%"\r\n'
-            '"%USERPROFILE%\\.codex-cli-relay\\bin\\codex.cmd" --model "auto_model/urm" --yolo\r\n'
+            'echo [launcher] starting Codex supervisor with %PROMPT_FILE% ...\r\n'
+            'powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%SUPERVISOR%" -TaskId "%TASK%" -Side "%SIDE%" -Repo "%REPO%" -Workspace "%DIR%" -PromptFile "%PROMPT_FILE%" -CodexCmd "%CODEX_CMD%"\r\n'
+            'popd\r\n'
+            'set "SUPERVISOR_EXIT=%ERRORLEVEL%"\r\n'
+            'echo [launcher] supervisor exited with code %SUPERVISOR_EXIT%.\r\n'
+            'pause\r\n'
+            'exit /b %SUPERVISOR_EXIT%\r\n'
         )
         with open(path, "w", encoding="ascii", errors="replace", newline="") as fh:
             fh.write(body)
@@ -888,11 +1074,11 @@ def cmd_rebuild(args):
             trust_project(dest)
             print(f"    {side}: {how}")
         write_launchers(task_id, root, meta)
-    launch_root = launcher_dir()
-    os.makedirs(launch_root, exist_ok=True)
-    if ids:
-        print(f"    一键重建脚本: {write_rebuild_script(launch_root, ids)}")
-    print("\n完成。请到桌面 GSB_codex\\launchers 双击 <题号>-A-run.cmd / <题号>-B-run.cmd。")
+    parents = {os.path.dirname(task_root(t)) for t in ids if task_root(t)}
+    for parent in sorted(parents):
+        if parent and os.path.isdir(parent):
+            print(f"    一键重建脚本: {write_rebuild_script(parent, ids)}")
+    print("\n完成。请到桌面 GSB_codex\\<题号> 双击 A-run.cmd / B-run.cmd。")
     return 0
 
 
@@ -1094,15 +1280,17 @@ def cmd_report(args):
         f"题目: {task_id} {meta.get('title') or ''}",
         f"任务类型: {meta.get('task_type')}",
         f"任务难度: {meta.get('difficulty')}",
-        f"语言/框架: {meta.get('language_framework')}",
+        f"语言框架：{meta.get('language_framework') or DEFAULT_LANGUAGE_FRAMEWORK}",
         f"Harness: {meta.get('harness')} {meta.get('harness_version')}",
         f"操作系统: {meta.get('os')}",
         f"环境可复现等级: {meta.get('env_level')}",
         f"初始环境快照: {init.get('permalink') or init.get('sha')}",
         f"A-SessionID: {a.get('session_id')}",
+        f"A-端口: {a.get('port') or '(运行时分配)'}",
         f"A-轨迹文件: {a.get('trajectory_url') or '(待上传)'}",
         f"A-产物快照: {a.get('product_snapshot_permalink') or a.get('product_snapshot_sha')}",
         f"B-SessionID: {b.get('session_id')}",
+        f"B-端口: {b.get('port') or '(运行时分配)'}",
         f"B-轨迹文件: {b.get('trajectory_url') or '(待上传)'}",
         f"B-产物快照: {b.get('product_snapshot_permalink') or b.get('product_snapshot_sha')}",
         f"GSB 结论: {gsb.get('conclusion') or ''}",
@@ -1170,13 +1358,13 @@ def build_parser():
     sub = p.add_subparsers(dest="cmd", required=True)
 
     n = sub.add_parser("new", help="新建题目并提交初始环境快照")
-    n.add_argument("id")
+    n.add_argument("id", nargs="?", help="题号；省略时自动使用下一个 YS_编号")
     n.add_argument("--workspace", required=True)
     n.add_argument("--prompt-file", required=True)
     n.add_argument("--title", default="")
     n.add_argument("--task-type", dest="task_type", default="")
     n.add_argument("--difficulty", default="困难")
-    n.add_argument("--lang", default="")
+    n.add_argument("--lang", default=DEFAULT_LANGUAGE_FRAMEWORK)
     n.add_argument("--harness", default="Codex CLI")
     n.add_argument("--harness-version", dest="harness_version", default="")
     n.add_argument("--os", default="Windows")
@@ -1193,8 +1381,24 @@ def build_parser():
     r.add_argument("--side", help="a 或 b：用 <题目目录>\\A|B 约定定位工作区")
     r.add_argument("--root", help="工作区根目录（默认用本机登记过的）")
     r.add_argument("--session", required=True)
+    r.add_argument("--port", type=int, help="本轮启动器分配的独立端口")
     r.add_argument("--no-push", dest="push", action="store_false")
     r.set_defaults(push=True, func=cmd_record)
+
+    at = sub.add_parser("archive-trajectory", help="归档成功完成的原始 Codex rollout 轨迹")
+    at.add_argument("id")
+    at.add_argument("--side", required=True, choices=["a", "b"])
+    at.add_argument("--workspace", required=True)
+    at.add_argument("--started-ms", type=int, required=True)
+    at.set_defaults(func=cmd_archive_trajectory)
+
+    fr = sub.add_parser("finalize-run", help="成功完成后归档日志、创建并推送 A/B 产物分支")
+    fr.add_argument("id")
+    fr.add_argument("--side", required=True, choices=["a", "b"])
+    fr.add_argument("--workspace", required=True)
+    fr.add_argument("--started-ms", type=int, required=True)
+    fr.add_argument("--port", type=int, required=True)
+    fr.set_defaults(func=cmd_finalize_run)
 
     s = sub.add_parser("reset", help="把工作区重置回初始环境")
     s.add_argument("id")

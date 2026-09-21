@@ -4,7 +4,7 @@
   "created_at": "2026-09-21T12:41:17",
   "task_type": "0-1 代码生成",
   "difficulty": "困难",
-  "language_framework": "HTML, CSS, JavaScript, SVG/Canvas, 原生 ES module（无构建）",
+  "language_framework": "TypeScript, React, Vite, Canvas",
   "harness": "Codex CLI",
   "harness_version": "",
   "os": "Windows",
@@ -12,8 +12,8 @@
   "prompt_file": "prompt.md",
   "initial_snapshot": {
     "branch": "ys_01/base",
-    "sha": "88d65d363673c820c3d8d01bd59429e60139eecb",
-    "permalink": "https://github.com/ys3027289298-creator/GSB_job/commit/88d65d363673c820c3d8d01bd59429e60139eecb"
+    "sha": "680c8d9785312fa48ae75c23b7e841545a7960b5",
+    "permalink": "https://github.com/ys3027289298-creator/GSB_job/commit/680c8d9785312fa48ae75c23b7e841545a7960b5"
   },
   "runs": {
     "A": {

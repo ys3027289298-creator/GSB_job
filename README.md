@@ -2,6 +2,28 @@
 
 一个仓库集中存放所有题目。每道题包含：**一个初始环境快照** + **A/B 两次跑的产物快照** + 两条轨迹文件。
 
+## 当前固定流程（YS_01 起）
+
+以后新题按以下固定约定执行，下面内容优先于本文件中的历史示例：
+
+- 题号默认从 `YS_01`、`YS_02` 顺序生成；
+- 初始环境分支为 `ys_编号/base`，只从指定工作区复制真实初始文件，不自动加入 `samples` 或其他示例文件；工作区为空时创建空根提交；
+- 初始环境快照先推送到 GitHub；A/B 不创建空分支，只有对应项目完整成功后才创建并推送 `ys_编号/a`、`ys_编号/b`；
+- 提示词原文同步到 `C:\Users\Administrator\Desktop\GSB_prompt\YS_编号.txt`，使用 UTF-8，段落之间不留空行；
+- A/B 工作区位于 `C:\Users\Administrator\Desktop\GSB_codex\YS_编号\A|B`，启动器 `A-run.cmd`、`B-run.cmd` 与项目目录同层，不放进 A/B 项目目录；
+- 启动器会自动把对应 UTF-8 prompt 传入 Codex CLI，并固定使用 `%USERPROFILE%\.codex-cli-relay\bin\codex.cmd --model auto_model/urm --yolo`；工具从 3101-3999 端口池原子分配未占用端口，禁止使用 3000，并通过 `GSB_PORT`、`PORT`、`VITE_PORT` 注入项目；
+- 409、429、请求限制、网络中断或普通中断会杀掉当前 Codex 并从第一条 prompt 重跑；504 会先等待 Codex CLI 自己完成 `Reconnecting...`，最终失败或进程退出后才重启；
+- 只有 Codex 输出完整 `task_complete` 成功结果后，才把原始轨迹按原文件名归档到 `C:\Users\Administrator\Desktop\GSB_日志文件\YS_编号\A|B`，并自动创建、提交、推送对应 A/B 产物分支；
+- 每次出题结果显示：`语言框架：TypeScript, React, Vite, Canvas`。提示词按详细编号章节编写，包含技术、玩法、任务、界面、测试和完成标准。
+
+标准命令：
+
+```bat
+uv run python tools\task.py new [YS_编号] --workspace <初始工作区> --prompt-file <提示词.txt>
+uv run python tools\task.py launch YS_编号
+uv run python tools\task.py report YS_编号
+```
+
 ## 仓库结构
 
 ```
