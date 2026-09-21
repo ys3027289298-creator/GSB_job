@@ -38,10 +38,13 @@ WORKSPACE_RECORD = ".workspace"  # 记在仓库里（不进工作区，避免给
 SIDES = ("A", "B")
 
 # 出好的 prompt 另存一份到桌面，方便双击打开、复制粘贴
-PROMPT_DIR_NAME = "prompt原文"
+PROMPT_DIR_NAME = "GSB_prompt"
 
-# 题目工作区默认放这里： <桌面>/GSB题目/<题号>/
-TASKS_DIR_NAME = os.environ.get("GSB_TASKS_DIR") or "GSB题目"
+# 题目工作区默认放这里： <桌面>/GSB_codex/projects/<题号>/
+TASKS_DIR_NAME = os.environ.get("GSB_TASKS_DIR") or os.path.join("GSB_codex", "projects")
+
+# A/B 项目目录与 Codex 启动器分开保存
+LAUNCHERS_DIR_NAME = os.path.join("GSB_codex", "launchers")
 
 # 每道题一个标签颜色，四个窗口一眼分得开
 LAUNCH_COLORS = ["#8e44ad", "#d35400", "#16a085", "#c2185b",
@@ -178,8 +181,15 @@ def prompt_copy_path(task_id, meta):
 
 
 def default_task_root(task_id):
-    """题目目录的默认位置：<桌面>/GSB题目/<题号>/"""
+    """题目目录的默认位置：<桌面>/GSB_codex/projects/<题号>/"""
     return os.path.join(desktop_dir(), TASKS_DIR_NAME, task_id.upper())
+
+
+def launcher_dir():
+    """Codex 启动器的独立目录。"""
+    return os.environ.get("GSB_LAUNCHERS_DIR") or os.path.join(
+        desktop_dir(), LAUNCHERS_DIR_NAME
+    )
 
 
 def drop_prompt_copy(task_id, meta=None):
@@ -758,16 +768,18 @@ def compare_with_base(base_ref, workspace):
 
 
 def write_launchers(task_id, root, meta):
-    """在题目目录下写 A/B 启动器：双击开一个带名字和颜色的终端标签，直接进这一轮的工作区。"""
+    """在独立启动器目录写 A/B 启动器，项目目录只保存 A/B 工作区。"""
     slug = ((meta.get("title") or "").strip().split() or [task_id.lower()])[0]
     slug = re.sub(r"[^A-Za-z0-9._-]+", "", slug) or task_id.lower()
     color = launch_color(task_id)
     written = []
-    os.makedirs(root, exist_ok=True)
+    launch_root = launcher_dir()
+    os.makedirs(launch_root, exist_ok=True)
 
     for side in SIDES:
         label = f"{task_id.upper()}-{side} {slug}"
-        path = os.path.join(root, f"{side}-run.cmd")
+        path = os.path.join(launch_root, f"{task_id.upper()}-{side}-run.cmd")
+        workspace = os.path.abspath(os.path.join(root, side))
         # .cmd 必须是纯 ASCII：cmd.exe 按 OEM 代码页解析文件，中文注释会出乱码
         body = (
             "@echo off\r\n"
@@ -775,7 +787,7 @@ def write_launchers(task_id, root, meta):
             "setlocal\r\n"
             f'set "LABEL={label}"\r\n'
             f'set "COLOR={color}"\r\n'
-            f'set "DIR=%~dp0{side}"\r\n'
+            f'set "DIR={workspace}"\r\n'
             f'set "TASK={task_id.upper()}"\r\n'
             f'set "SIDE={side}"\r\n'
             f'set "REPO={REPO}"\r\n'
@@ -788,13 +800,13 @@ def write_launchers(task_id, root, meta):
             "where wt >nul 2>nul\r\n"
             "if errorlevel 1 goto plain\r\n"
             'wt -w 0 nt --title "%LABEL%" --tabColor "%COLOR%" '
-            '--suppressApplicationTitle -d "%DIR%" cmd /k codexcli\r\n'
+            '--suppressApplicationTitle -d "%DIR%" cmd /k "%USERPROFILE%\\.codex-cli-relay\\bin\\codex.cmd" --model "auto_model/urm" --yolo\r\n'
             "if errorlevel 1 goto plain\r\n"
             "exit /b 0\r\n"
             ":plain\r\n"
             "title %LABEL%\r\n"
             'cd /d "%DIR%"\r\n'
-            "codexcli\r\n"
+            '"%USERPROFILE%\\.codex-cli-relay\\bin\\codex.cmd" --model "auto_model/urm" --yolo\r\n'
         )
         with open(path, "w", encoding="ascii", errors="replace", newline="") as fh:
             fh.write(body)
@@ -826,9 +838,9 @@ def cmd_launch(args):
     return 0
 
 
-def write_rebuild_script(parent, task_ids):
-    """在题目目录的父目录里放一个一键重建脚本（桌面误删、换机器时用）。"""
-    path = os.path.join(parent, "重建全部题目.cmd")
+def write_rebuild_script(destination, task_ids):
+    """在独立启动器目录里放一个一键重建脚本。"""
+    path = os.path.join(destination, "重建全部题目.cmd")
     body = (
         "@echo off\r\n"
         "rem Rebuild every task workspace (A/B) from git, then refresh the launchers.\r\n"
@@ -876,11 +888,11 @@ def cmd_rebuild(args):
             trust_project(dest)
             print(f"    {side}: {how}")
         write_launchers(task_id, root, meta)
-    parents = {os.path.dirname(task_root(t)) for t in ids if task_root(t)}
-    for parent in sorted(parents):
-        if parent and os.path.isdir(parent):
-            print(f"    一键重建脚本: {write_rebuild_script(parent, ids)}")
-    print("\n完成。桌面上双击 <题目目录>\\A-run.cmd / B-run.cmd 就能开对应那一轮。")
+    launch_root = launcher_dir()
+    os.makedirs(launch_root, exist_ok=True)
+    if ids:
+        print(f"    一键重建脚本: {write_rebuild_script(launch_root, ids)}")
+    print("\n完成。请到桌面 GSB_codex\\launchers 双击 <题号>-A-run.cmd / <题号>-B-run.cmd。")
     return 0
 
 
